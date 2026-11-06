@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
+import android.util.Log
 import android.widget.*
 
 class MainActivity : Activity() {
@@ -47,44 +48,86 @@ class MainActivity : Activity() {
             if (s == BluetoothProfile.STATE_CONNECTED) host = d
             if (s == BluetoothProfile.STATE_DISCONNECTED) host = null
             runOnUiThread {
-                status.text = if (host != null) "Imeunganishwa: ${d?.name}" else "Haijaunganishwa"
+                status.text = if (host != null) "Imeunganishwa" else "Haijaunganishwa"
             }
         }
     }
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        buildUi()
-        if (checkSelfPermission(perms[0]) == PackageManager.PERMISSION_GRANTED) startHid()
-        else requestPermissions(perms, 1)
+        val prefs = getSharedPreferences("crash", MODE_PRIVATE)
+        val old = prefs.getString("log", null)
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            prefs.edit().putString("log", Log.getStackTraceString(e)).commit()
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+        try {
+            buildUi()
+            if (old != null) {
+                prefs.edit().remove("log").apply()
+                status.text = "KOSA LILILOPITA (piga picha ya skrini):\n" + old.take(1200)
+            } else if (checkSelfPermission(perms[0]) == PackageManager.PERMISSION_GRANTED) {
+                startHid()
+            } else {
+                requestPermissions(perms, 1)
+            }
+        } catch (e: Throwable) {
+            showError(e)
+        }
+    }
+
+    private fun showError(e: Throwable) {
+        val tv = TextView(this).apply {
+            text = "KOSA (piga picha ya skrini):\n" + Log.getStackTraceString(e).take(1500)
+            setPadding(16, 16, 16, 16)
+        }
+        setContentView(ScrollView(this).apply { addView(tv) })
     }
 
     override fun onRequestPermissionsResult(code: Int, p: Array<out String>, r: IntArray) {
-        if (r.isNotEmpty() && r.all { it == PackageManager.PERMISSION_GRANTED }) startHid()
-        else status.text = "Ruhusa za Bluetooth zimekataliwa. Zikubali kwenye Settings."
+        try {
+            if (r.isNotEmpty() && r.all { it == PackageManager.PERMISSION_GRANTED }) startHid()
+            else status.text = "Ruhusa za Bluetooth zimekataliwa. Zikubali kwenye Settings."
+        } catch (e: Throwable) {
+            status.text = "KOSA: " + Log.getStackTraceString(e).take(1200)
+        }
     }
 
     override fun onDestroy() {
-        try { hid?.unregisterApp() } catch (e: Exception) {}
+        try { hid?.unregisterApp() } catch (e: Throwable) {}
         super.onDestroy()
     }
 
     private fun startHid() {
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
-            override fun onServiceConnected(p: Int, proxy: BluetoothProfile) {
-                hid = proxy as BluetoothHidDevice
-                hid!!.registerApp(
-                    BluetoothHidDeviceAppSdpSettings(
-                        "Redmi Keyboard", "Keyboard", "Me",
-                        BluetoothHidDevice.SUBCLASS1_KEYBOARD, DESC
-                    ),
-                    null, null, mainExecutor, callback
-                )
-            }
+        try {
+            val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+            if (adapter == null) { status.text = "Simu haina Bluetooth"; return }
+            if (!adapter.isEnabled) { status.text = "Washa Bluetooth kisha fungua app tena"; return }
+            val ok = adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
+                override fun onServiceConnected(p: Int, proxy: BluetoothProfile) {
+                    try {
+                        hid = proxy as BluetoothHidDevice
+                        hid!!.registerApp(
+                            BluetoothHidDeviceAppSdpSettings(
+                                "Redmi Keyboard", "Keyboard", "Me",
+                                BluetoothHidDevice.SUBCLASS1_KEYBOARD, DESC
+                            ),
+                            null, null, mainExecutor, callback
+                        )
+                    } catch (e: Throwable) {
+                        runOnUiThread {
+                            status.text = "KOSA registerApp: " + Log.getStackTraceString(e).take(1200)
+                        }
+                    }
+                }
 
-            override fun onServiceDisconnected(p: Int) { hid = null }
-        }, BluetoothProfile.HID_DEVICE)
+                override fun onServiceDisconnected(p: Int) { hid = null }
+            }, BluetoothProfile.HID_DEVICE)
+            if (!ok) status.text = "HID HAIPO: simu haiauni HID Device profile"
+            else status.text = "Inatafuta HID..."
+        } catch (e: Throwable) {
+            status.text = "KOSA startHid: " + Log.getStackTraceString(e).take(1200)
+        }
     }
 
     // ---------- UI ----------
@@ -119,7 +162,6 @@ class MainActivity : Activity() {
             )
         })
 
-        // Modifiers zinazoshikika (bonyeza kwanza, kisha herufi/kitufe)
         val mrow = LinearLayout(this)
         toggle(mrow, "Shift", 0x02)
         toggle(mrow, "Ctrl", 0x01)
@@ -131,8 +173,8 @@ class MainActivity : Activity() {
             "Enter" to { press(0x28) }, "Bksp" to { press(0x2A) })
         row(root, "Space" to { press(0x2C) }, "Caps" to { press(0x39) },
             "Del" to { press(0x4C) })
-        row(root, "←" to { press(0x50) }, "↑" to { press(0x52) },
-            "↓" to { press(0x51) }, "→" to { press(0x4F) })
+        row(root, "Left" to { press(0x50) }, "Up" to { press(0x52) },
+            "Down" to { press(0x51) }, "Right" to { press(0x4F) })
         row(root, "Home" to { press(0x4A) }, "End" to { press(0x4D) },
             "PgUp" to { press(0x4B) }, "PgDn" to { press(0x4E) })
 
